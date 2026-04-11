@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>专属于惊喜和金毛的web</title>
+    <style>
+        /* 核心样式：打造深色系的现代感 */
+        :root {
+            --primary-bg: #1a1a2e; /* 深蓝黑背景 */
+            --secondary-bg: #2a2a4e; /* 稍浅的面板背景 */
+            --accent-color: #00f2fe; /* 亮蓝强调色 */
+            --text-color: #ffffff; /* 纯白文字 */
+            --card-shadow: 0 10px 30px rgba(0, 0, 0, 0.5); /* 柔和阴影 */
+            --font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+
+        body {
+            font-family: var(--font-family);
+            background: radial-gradient(circle at center, #2a2a4e 0%, #1a1a2e 100%);
+            color: var(--text-color);
+            margin: 0;
+            padding: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            overflow: hidden; /* 防止出现滚动条 */
+        }
+
+        /* 顶部导航和标题 */
+        header {
+            width: 100%;
+            padding: 20px 40px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            position: fixed;
+            top: 0;
+            z-index: 100;
+        }
+
+        .logo {
+            font-size: 24px;
+            font-weight: bold;
+            color: var(--accent-color);
+            text-transform: uppercase;
+            letter-spacing: 2px;
+        }
+
+        .main-title {
+            text-align: center;
+            margin-top: 80px; /* 留出 header 空间 */
+            margin-bottom: 40px;
+        }
+
+        h1 {
+            font-size: 42px;
+            background: linear-gradient(135deg, #00f2fe 0%, #4facfe 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 10px;
+        }
+
+        .subtitle {
+            font-size: 18px;
+            color: #b0b0b0;
+            font-weight: 300;
+        }
+
+        /* 视频容器 */
+        .video-hub {
+            display: flex;
+            gap: 30px;
+            justify-content: center;
+            align-items: center;
+            flex-wrap: wrap; /* 适配不同屏幕 */
+            padding: 0 20px;
+        }
+
+        /* 单个视频卡片样式 */
+        .video-card {
+            background-color: var(--secondary-bg);
+            border-radius: 20px;
+            box-shadow: var(--card-shadow);
+            padding: 15px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            transition: transform 0.3s ease;
+        }
+
+        .video-card:hover {
+            transform: translateY(-5px); /* 悬停浮起效果 */
+        }
+
+        .card-header {
+            width: 100%;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+            padding: 0 10px;
+        }
+
+        .user-label {
+            font-size: 14px;
+            font-weight: 600;
+            color: #d0d0d0;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .user-label::before {
+            content: '';
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background-color: var(--accent-color); /* 状态指示灯 */
+        }
+
+        .remote .user-label::before {
+            background-color: #ff9f43; /* 远端等待状态指示灯 */
+        }
+
+        .status-dot {
+            font-size: 12px;
+            color: #b0b0b0;
+        }
+
+        /* 视频元素设置 */
+        video {
+            width: 440px; /* 增加宽度 */
+            height: 330px; /* 增加高度 */
+            background-color: #10101a;
+            border-radius: 15px;
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.3);
+            object-fit: cover; /* 填充整个容器 */
+        }
+
+        /* 远端等待界面的特殊样式 */
+        .video-placeholder {
+            width: 440px;
+            height: 330px;
+            background: #10101a url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><circle cx="50" cy="50" r="40" stroke="%23ff9f43" stroke-width="2" fill="none" stroke-dasharray="250" stroke-dashoffset="0"><animate attributeName="stroke-dashoffset" from="0" to="500" dur="5s" repeatCount="indefinite"/></circle></svg>') no-repeat center;
+            border-radius: 15px;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            gap: 15px;
+            color: #ff9f43;
+            font-size: 16px;
+        }
+
+        .remote-status {
+            text-align: center;
+        }
+
+        /* 控制按钮区 */
+        .control-bar {
+            width: 100%;
+            padding: 20px 40px;
+            display: flex;
+            justify-content: center;
+            gap: 20px;
+            position: fixed;
+            bottom: 30px;
+            z-index: 100;
+        }
+
+        .btn {
+            background: rgba(255, 255, 255, 0.1);
+            border: 2px solid rgba(255, 255, 255, 0.2);
+            color: var(--text-color);
+            border-radius: 50px;
+            padding: 12px 28px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .btn:hover {
+            background: rgba(255, 255, 255, 0.2);
+            transform: scale(1.05);
+        }
+
+        .btn-end {
+            background-color: #ff4757;
+            border-color: #ff4757;
+        }
+
+        .btn-end:hover {
+            background-color: #ff6b81;
+            border-color: #ff6b81;
+        }
+
+        /* 响应式设计：适配小屏幕 */
+        @media (max-width: 960px) {
+            h1 { font-size: 32px; }
+            video, .video-placeholder { width: 100%; height: auto; aspect-ratio: 4/3; }
+            .video-hub { gap: 20px; }
+        }
+    </style>
+</head>
+<body>
+
+    <header>
+        <div class="logo">NEXVIBE</div>
+        <div class="user-profile">
+            </div>
+    </header>
+
+    <div class="main-title">
+        <h1>NEXVIBE 1:1 VIDEO HUB</h1>
+        <div class="subtitle">Secure. High-Definition. Connected.</div>
+    </div>
+    
+    <div class="video-hub">
+        <div class="video-card local">
+            <div class="card-header">
+                <span class="user-label">YOU (LOCAL)</span>
+                <span class="status-dot">YOUR CAMERA</span>
+            </div>
+            <video id="localVideo" autoplay playsinline muted></video>
+        </div>
+        
+        <div class="video-card remote">
+            <div class="card-header">
+                <span class="user-label">PEER (REMOTE)</span>
+                <span class="status-dot">WAITING</span>
+            </div>
+            <div class="video-placeholder" id="remotePlaceholder">
+                <div class="remote-status">
+                    <p>WAITING FOR PEER TO JOIN...</p>
+                    <p>(ROOM: 888)</p>
+                </div>
+            </div>
+            <video id="remoteVideo" autoplay playsinline style="display: none;"></video>
+        </div>
+    </div>
+
+    <div class="control-bar">
+        <button class="btn btn-end">End Call</button>
+        <button class="btn">Microphone</button>
+        <button class="btn">Camera</button>
+        <button class="btn">Screen Share</button>
+        <button class="btn">Chat</button>
+        <button class="btn">Settings</button>
+    </div>
+
+    <script src="main.js"></script>
+</body>
+</html>
