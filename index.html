@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>属于惊喜和金毛的web</title>
+    <style>
+        :root {
+            --primary-bg: #1a1a2e;
+            --accent-color: #00f2fe;
+            --text-color: #ffffff;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: var(--primary-bg);
+            /* 深色渐变层，确保照片不会抢戏 */
+            background: radial-gradient(circle at center, rgba(26, 26, 46, 0.8) 0%, rgba(26, 26, 46, 1) 100%);
+            color: var(--text-color);
+            margin: 0;
+            padding: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            overflow: hidden;
+            position: relative;
+        }
+
+        /* --- 新增：照片背景装饰层 --- */
+        .photo-background {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: -1; /* 放在最底层 */
+            overflow: hidden;
+            pointer-events: none; /* 防止点击到图片 */
+        }
+
+        .bg-photo {
+            position: absolute;
+            width: 250px; /* 照片宽度 */
+            height: auto;
+            padding: 10px 10px 40px 10px; /* 留出拍立得白边效果 */
+            background: white;
+            box-shadow: 0 10px 20px rgba(0,0,0,0.5);
+            border-radius: 4px;
+            opacity: 0.5; /* 半透明效果，更高级 */
+            transition: opacity 0.3s ease;
+        }
+
+        /* 四张照片的位置和角度旋转 */
+        .p1 { top: 5%; left: 5%; transform: rotate(-15deg); }
+        .p2 { top: 10%; right: 5%; transform: rotate(10deg); }
+        .p3 { bottom: 15%; left: 8%; transform: rotate(12deg); }
+        .p4 { bottom: 10%; right: 10%; transform: rotate(-8deg); }
+
+        /* --- 视频中心区域 --- */
+        .content-layer {
+            z-index: 10;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        .main-title h1 {
+            font-size: 36px;
+            background: linear-gradient(135deg, #00f2fe 0%, #4facfe 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 5px;
+        }
+
+        .video-hub {
+            display: flex;
+            gap: 30px;
+            padding: 20px;
+            background: rgba(255, 255, 255, 0.05); /* 半透明背景板 */
+            backdrop-filter: blur(10px); /* 磨砂玻璃效果 */
+            border-radius: 30px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .video-card {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        video {
+            width: 400px;
+            height: 300px;
+            background-color: #000;
+            border-radius: 15px;
+            object-fit: cover;
+        }
+
+        .user-label {
+            margin-top: 10px;
+            font-size: 14px;
+            font-weight: bold;
+            color: var(--accent-color);
+        }
+
+        .control-bar {
+            margin-top: 30px;
+            display: flex;
+            gap: 15px;
+        }
+
+        .btn {
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            color: white;
+            padding: 10px 20px;
+            border-radius: 20px;
+            cursor: pointer;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="photo-background">
+        <img src="p1.jpg" class="bg-photo p1" alt="memorial">
+        <img src="p2.jpg" class="bg-photo p2" alt="memorial">
+        <img src="p3.jpg" class="bg-photo p3" alt="memorial">
+        <img src="p4.jpg" class="bg-photo p4" alt="memorial">
+    </div>
+
+    <div class="content-layer">
+        <div class="main-title">
+            <h1>10.29and1.14</h1>
+        </div>
+        
+        <div class="video-hub">
+            <div class="video-card">
+                <video id="localVideo" autoplay playsinline muted></video>
+                <div class="user-label">YOU</div>
+            </div>
+            
+            <div class="video-card">
+                <video id="remoteVideo" autoplay playsinline></video>
+                <div class="user-label">PEER</div>
+            </div>
+        </div>
+
+        <div class="control-bar">
+            <button class="btn">Mute</button>
+            <button class="btn">Video Off</button>
+            <button class="btn" style="background: #ff4757;">End Call</button>
+        </div>
+    </div>
+
+    <script src="main.js"></script>
+</body>
+</html>
