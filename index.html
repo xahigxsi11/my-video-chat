@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>属于惊喜和金毛的web</title>
+    <style>
+        :root {
+            --primary-bg: #1a1a2e;
+            --accent-color: #00f2fe;
+            --text-color: #ffffff;
+        }
+
+        body {
+            font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            background-color: var(--primary-bg);
+            /* 深色渐变背景 */
+            background: radial-gradient(circle at center, rgba(26, 26, 46, 0.8) 0%, rgba(26, 26, 46, 1) 100%);
+            color: var(--text-color);
+            margin: 0;
+            padding: 20px 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: flex-start; /* 从顶部开始排列，方便滚动 */
+            min-height: 100vh;
+            overflow-x: hidden;
+            overflow-y: auto;
+            position: relative;
+        }
+
+        /* --- 背景照片装饰 --- */
+        .photo-background {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: -1;
+            overflow: hidden;
+            pointer-events: none;
+        }
+
+        .bg-photo {
+            position: absolute;
+            width: 200px; /* 稍微缩小一点照片，避免遮挡内容 */
+            height: auto;
+            padding: 8px 8px 30px 8px;
+            background: white;
+            box-shadow: 0 10px 20px rgba(0,0,0,0.5);
+            border-radius: 4px;
+            opacity: 0.3; /* 降低透明度作为背景 */
+            transition: opacity 0.3s ease;
+        }
+
+        .p1 { top: 5%; left: 2%; transform: rotate(-15deg); }
+        .p2 { top: 15%; right: 2%; transform: rotate(10deg); }
+        .p3 { bottom: 10%; left: 5%; transform: rotate(12deg); }
+        .p4 { bottom: 5%; right: 5%; transform: rotate(-8deg); }
+
+        /* --- 主内容区域 --- */
+        .content-layer {
+            z-index: 10;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            width: 100%;
+            gap: 20px;
+        }
+
+        .main-title h1 {
+            font-size: 32px;
+            background: linear-gradient(135deg, #00f2fe 0%, #4facfe 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin: 10px 0;
+            text-shadow: 0 5px 15px rgba(0, 242, 254, 0.2);
+        }
+
+        /* --- 视频区域 --- */
+        .video-hub {
+            display: flex;
+            flex-direction: column; /* 上下排列 */
+            gap: 15px;
+            padding: 15px;
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(10px);
+            border-radius: 20px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .video-card {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        video {
+            width: 360px; /* 稍微缩小一点，给聊天框腾位置 */
+            max-width: 85vw;
+            height: 270px;
+            background-color: #000;
+            border-radius: 12px;
+            object-fit: cover;
+            box-shadow: 0 8px 20px rgba(0,0,0,0.3);
+        }
+
+        .user-label {
+            margin-top: 8px;
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: var(--accent-color);
+            font-weight: bold;
+        }
+
+        /* --- 聊天区域 --- */
+        .chat-container {
+            width: 390px;
+            max-width: 85vw;
+            height: 200px; /* 减小高度，避免页面太长 */
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(10px);
+            border-radius: 20px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .chat-messages {
+            flex: 1;
+            padding: 12px;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        /* 隐藏默认滚动条，美化滚动体验 */
+        .chat-messages::-webkit-scrollbar {
+            width: 4px;
+        }
+        .chat-messages::-webkit-scrollbar-thumb {
+            background: rgba(255, 255, 255, 0.2);
+            border-radius: 10px;
+        }
+
+        .msg {
+            max-width: 80%;
+            padding: 8px 12px;
+            border-radius: 12px;
+            font-size: 14px;
+            line-height: 1.4;
+            word-wrap: break-word;
+        }
+
+        .msg-me {
+            align-self: flex-end;
+            background: var(--accent-color);
+            color: #1a1a2e;
+            border-bottom-right-radius: 2px;
+        }
+
+        .msg-peer {
+            align-self: flex-start;
+            background: rgba(255, 255, 255, 0.15);
+            color: white;
+            border-bottom-left-radius: 2px;
+        }
+
+        .chat-input-area {
+            display: flex;
+            padding: 10px;
+            background: rgba(0, 0, 0, 0.3);
+            gap: 8px;
+        }
+
+        #chatInput {
+            flex: 1;
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 8px;
+            padding: 8px 12px;
+            color: white;
+            outline: none;
+            font-size: 14px;
+        }
+
+        #sendBtn {
+            background: var(--accent-color);
+            border: none;
+            color: #1a1a2e;
+            padding: 0 15px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: bold;
+            transition: transform 0.2s;
+        }
+
+        #sendBtn:active { transform: scale(0.95); }
+
+        /* --- 控制条 --- */
+        .control-bar {
+            display: flex;
+            gap: 12px;
+            padding-bottom: 30px;
+        }
+
+        .btn {
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            color: white;
+            padding: 10px 18px;
+            border-radius: 15px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.3s;
+        }
+
+        .btn:hover {
+            background: rgba(255, 255, 255, 0.2);
+        }
+    </style>
+</head>
+<body>
+
+    <div class="photo-background">
+        <img src="p1.jpg" class="bg-photo p1" alt="memorial">
+        <img src="p2.jpg" class="bg-photo p2" alt="memorial">
+        <img src="p3.jpg" class="bg-photo p3" alt="memorial">
+        <img src="p4.jpg" class="bg-photo p4" alt="memorial">
+    </div>
+
+    <div class="content-layer">
+        <div class="main-title">
+            <h1>10.29 & 1.14</h1>
+        </div>
+        
+        <div class="video-hub">
+            <div class="video-card">
+                <video id="localVideo" autoplay playsinline muted></video>
+                <div class="user-label">You</div>
+            </div>
+            
+            <div class="video-card">
+                <video id="remoteVideo" autoplay playsinline></video>
+                <div class="user-label">Peer</div>
+            </div>
+        </div>
+
+        <div class="chat-container">
+            <div id="chatMessages" class="chat-messages">
+                </div>
+            <div class="chat-input-area">
+                <input type="text" id="chatInput" placeholder="说点什么吧..." autocomplete="off">
+                <button id="sendBtn">发送</button>
+            </div>
+        </div>
+
+        <div class="control-bar">
+            <button id="muteBtn" class="btn">Mute</button>
+            <button id="videoBtn" class="btn">Video Off</button>
+            <button id="hangupBtn" class="btn" style="background: #ff4757; border: none;">End Call</button>
+        </div>
+    </div>
+
+    <script src="main.js"></script>
+</body>
+</html>
