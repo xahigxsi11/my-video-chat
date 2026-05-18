@@ -14,7 +14,6 @@
         body {
             font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
             background-color: var(--primary-bg);
-            /* 深色渐变背景 */
             background: radial-gradient(circle at center, rgba(26, 26, 46, 0.8) 0%, rgba(26, 26, 46, 1) 100%);
             color: var(--text-color);
             margin: 0;
@@ -22,14 +21,13 @@
             display: flex;
             flex-direction: column;
             align-items: center;
-            justify-content: flex-start; /* 从顶部开始排列，方便滚动 */
+            justify-content: flex-start;
             min-height: 100vh;
             overflow-x: hidden;
             overflow-y: auto;
             position: relative;
         }
 
-        /* --- 背景照片装饰 --- */
         .photo-background {
             position: fixed;
             top: 0;
@@ -43,13 +41,13 @@
 
         .bg-photo {
             position: absolute;
-            width: 200px; /* 稍微缩小一点照片，避免遮挡内容 */
+            width: 200px;
             height: auto;
             padding: 8px 8px 30px 8px;
             background: white;
             box-shadow: 0 10px 20px rgba(0,0,0,0.5);
             border-radius: 4px;
-            opacity: 0.3; /* 降低透明度作为背景 */
+            opacity: 0.3;
             transition: opacity 0.3s ease;
         }
 
@@ -58,14 +56,13 @@
         .p3 { bottom: 10%; left: 5%; transform: rotate(12deg); }
         .p4 { bottom: 5%; right: 5%; transform: rotate(-8deg); }
 
-        /* --- 主内容区域 --- */
         .content-layer {
             z-index: 10;
             display: flex;
             flex-direction: column;
             align-items: center;
             width: 100%;
-            gap: 20px;
+            gap: 16px;
         }
 
         .main-title h1 {
@@ -73,14 +70,25 @@
             background: linear-gradient(135deg, #00f2fe 0%, #4facfe 100%);
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
-            margin: 10px 0;
+            margin: 10px 0 4px;
             text-shadow: 0 5px 15px rgba(0, 242, 254, 0.2);
         }
 
-        /* --- 视频区域 --- */
+        .status-pill {
+            max-width: 85vw;
+            padding: 8px 14px;
+            border-radius: 999px;
+            background: rgba(0, 0, 0, 0.32);
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            color: rgba(255, 255, 255, 0.86);
+            font-size: 13px;
+            text-align: center;
+            backdrop-filter: blur(8px);
+        }
+
         .video-hub {
             display: flex;
-            flex-direction: column; /* 上下排列 */
+            flex-direction: column;
             gap: 15px;
             padding: 15px;
             background: rgba(255, 255, 255, 0.05);
@@ -96,7 +104,7 @@
         }
 
         video {
-            width: 360px; /* 稍微缩小一点，给聊天框腾位置 */
+            width: 360px;
             max-width: 85vw;
             height: 270px;
             background-color: #000;
@@ -114,11 +122,10 @@
             font-weight: bold;
         }
 
-        /* --- 聊天区域 --- */
         .chat-container {
             width: 390px;
             max-width: 85vw;
-            height: 200px; /* 减小高度，避免页面太长 */
+            height: 200px;
             background: rgba(255, 255, 255, 0.05);
             backdrop-filter: blur(10px);
             border-radius: 20px;
@@ -137,10 +144,10 @@
             gap: 8px;
         }
 
-        /* 隐藏默认滚动条，美化滚动体验 */
         .chat-messages::-webkit-scrollbar {
             width: 4px;
         }
+
         .chat-messages::-webkit-scrollbar-thumb {
             background: rgba(255, 255, 255, 0.2);
             border-radius: 10px;
@@ -200,7 +207,6 @@
 
         #sendBtn:active { transform: scale(0.95); }
 
-        /* --- 控制条 --- */
         .control-bar {
             display: flex;
             gap: 12px;
@@ -221,6 +227,12 @@
         .btn:hover {
             background: rgba(255, 255, 255, 0.2);
         }
+
+        @media (min-width: 900px) {
+            .video-hub {
+                flex-direction: row;
+            }
+        }
     </style>
 </head>
 <body>
@@ -236,13 +248,15 @@
         <div class="main-title">
             <h1>10.29 & 1.14</h1>
         </div>
-        
+
+        <div id="connectionStatus" class="status-pill">正在启动...</div>
+
         <div class="video-hub">
             <div class="video-card">
                 <video id="localVideo" autoplay playsinline muted></video>
                 <div class="user-label">You</div>
             </div>
-            
+
             <div class="video-card">
                 <video id="remoteVideo" autoplay playsinline></video>
                 <div class="user-label">Peer</div>
@@ -250,8 +264,7 @@
         </div>
 
         <div class="chat-container">
-            <div id="chatMessages" class="chat-messages">
-                </div>
+            <div id="chatMessages" class="chat-messages"></div>
             <div class="chat-input-area">
                 <input type="text" id="chatInput" placeholder="说点什么吧..." autocomplete="off">
                 <button id="sendBtn">发送</button>
