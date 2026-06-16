@@ -68,6 +68,7 @@ async def get_config():
     return JSONResponse({
         "iceServers": ice_servers,
         "hasTurn": bool(TURN_URLS and TURN_USERNAME and TURN_CREDENTIAL),
+        "turnUrlCount": len(TURN_URLS),
         "roomSecretEnabled": bool(ROOM_SECRET),
     })
 

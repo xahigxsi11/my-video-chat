@@ -1,16 +1,17 @@
 /**
- * 私密双人 WebRTC 网站：稳定性优化版
+ * 私密双人 WebRTC 网站：稳定性优化版 v2
  *
- * 主要改动：
- * 1. 从 /config 读取 STUN/TURN 配置
- * 2. 支持 ?room=xxx 和 ?token=xxx
- * 3. ICE candidate 排队，避免 candidate 早于 remoteDescription 导致失败
- * 4. WebSocket 心跳与自动重连
- * 5. WebRTC failed/disconnected 后重建
- * 6. 增加连接状态显示
- * 7. Magic Camera：Canvas 处理 + 滤镜 + 截图
- * 8. Canvas → WebRTC 发送流
- * 9. Air Writing：HandLandmarker 空中写字
+ * v2 改动（2026-06-16）：
+ * 1. 引入 pcGeneration — 每次新建 PC 递增，信令消息带 generation，忽略旧消息
+ * 2. 移除硬编码 iceTransportPolicy: 'relay'，改为 URL 参数 ?forceRelay=1 控制
+ * 3. 支持 ?debug=webrtc、?forceRelay=1、?turnTcpOnly=1
+ * 4. ICE disconnected 等待 7 秒再判定失败，避免过早重建
+ * 5. peer-left 等待 10 秒再 reset PC，避免 WebSocket 短暂断开引发震荡
+ * 6. restartIce 对双方都可用（不再仅 caller）
+ * 7. onconnectionstatechange 'failed' 不再重复 reset（交给 ICE failed 处理）
+ * 8. remoteVideo 显式调用 play()，失败时显示点击播放按钮
+ * 9. 增强 ICE candidate pair 日志（nominated、rtt、bitrate、bytesReceived）
+ * 10. Magic Camera / Air Writing / 聊天功能完全保留
  */
 (() => {
 const localVideo = document.getElementById('localVideo');
@@ -37,10 +38,15 @@ const clearDrawingBtn = document.getElementById('clearDrawingBtn');
 const undoStrokeBtn = document.getElementById('undoStrokeBtn');
 const mirrorToggle = document.getElementById('mirrorToggle');
 
+// ===== URL 参数 =====
 const params = new URLSearchParams(window.location.search);
 const roomID = params.get('room') || '888';
 const token = params.get('token') || '';
+const DEBUG_WEBRTC = params.get('debug') === 'webrtc' || params.get('debug') === '1';
+const FORCE_RELAY = params.get('forceRelay') === '1';
+const TURN_TCP_ONLY = params.get('turnTcpOnly') === '1';
 
+// ===== 配置 =====
 let configuration = {
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
@@ -49,7 +55,9 @@ let configuration = {
   iceCandidatePoolSize: 10,
 };
 
+// ===== 全局状态 =====
 let peerConnection = null;
+let pcGeneration = 0;           // 每次 createPeerConnection 递增
 let localStream = null;
 let ws = null;
 
@@ -58,6 +66,14 @@ let manuallyClosed = false;
 let reconnectTimer = null;
 let heartbeatTimer = null;
 let pendingCandidates = [];
+
+// ICE disconnected 计时器
+let iceDisconnectTimer = null;
+const ICE_DISCONNECT_GRACE_MS = 7000;   // disconnected 后等 7 秒
+
+// peer-left 防抖
+let peerLeftTimer = null;
+const PEER_LEFT_GRACE_MS = 10000;       // 对方离开后等 10 秒
 
 let isMuted = false;
 let isVideoOff = false;
@@ -87,8 +103,10 @@ let landmarkerInitStarted = false;
 let handDetectionFrameSkip = 0;
 const HAND_DETECT_EVERY_N_FRAMES = 3;
 
+// ===== 工具函数 =====
+
 function setStatus(text) {
-  console.log(text);
+  console.log('[status]', text);
   if (statusEl) statusEl.textContent = text;
 }
 
@@ -96,32 +114,88 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+function debugLog(tag, ...args) {
+  if (DEBUG_WEBRTC) {
+    console.log(`[webrtc:${tag}]`, ...args);
+  }
+}
+
+function sanitizeCandidateForLog(candidateStr) {
+  // SDP candidate 行里 IP 地址脱敏：保留类型和协议，IP 替换为 x.x.x.x
+  if (!candidateStr) return '(empty)';
+  const parts = candidateStr.split(' ');
+  if (parts.length >= 5) {
+    parts[4] = 'x.x.x.x';  // address
+  }
+  return parts.join(' ');
+}
+
+// ===== /config 加载 =====
+
 async function loadConfig() {
   try {
     const res = await fetch('/config', { cache: 'no-store' });
     const config = await res.json();
 
     if (Array.isArray(config.iceServers) && config.iceServers.length > 0) {
+      let iceServers = config.iceServers;
+
+      // 如果 ?turnTcpOnly=1，只保留 TCP/TLS 的 TURN URL
+      if (TURN_TCP_ONLY) {
+        iceServers = iceServers.map(server => {
+          if (server.urls && (typeof server.urls === 'string' || Array.isArray(server.urls))) {
+            const urls = (typeof server.urls === 'string' ? [server.urls] : server.urls)
+              .filter(u => {
+                const lower = u.toLowerCase();
+                return !lower.startsWith('turn:') || lower.includes('transport=tcp') || lower.startsWith('turns:');
+              });
+            if (urls.length === 0) return null;
+            return { ...server, urls: urls.length === 1 ? urls[0] : urls };
+          }
+          return server;
+        }).filter(Boolean);
+        console.log('TURN TCP-only 模式，过滤后 iceServers:', iceServers.length, '个');
+      }
+
       configuration = {
-        iceServers: config.iceServers,
+        iceServers: iceServers,
         iceCandidatePoolSize: 10,
-        // 调试/稳定优先：强制所有音视频流量走 TURN relay。
-        // 如果这样能连上，说明之前是 P2P/STUN 穿透失败。
-        iceTransportPolicy: config.hasTurn ? 'relay' : 'all',
       };
-      console.log('RTCPeerConnection configuration:', configuration);
+
+      // 只有 ?forceRelay=1 时才强制走 relay
+      if (FORCE_RELAY) {
+        configuration.iceTransportPolicy = 'relay';
+        console.log('强制 relay 模式（?forceRelay=1）');
+      }
+
+      debugLog('config', 'RTCPeerConnection configuration:', {
+        iceServers: iceServers.map(s => ({
+          urls: typeof s.urls === 'string' ? s.urls : JSON.stringify(s.urls),
+          hasCredential: !!s.credential,
+          hasUsername: !!s.username,
+        })),
+        iceTransportPolicy: configuration.iceTransportPolicy || 'all',
+      });
     }
+
+    console.log('TURN 状态:', {
+      hasTurn: config.hasTurn,
+      turnUrlCount: config.turnUrlCount || 0,
+      roomSecretEnabled: config.roomSecretEnabled,
+    });
 
     if (!config.hasTurn) {
-      console.warn('⚠️ 当前没有 TURN。复杂网络下视频/语音可能仍然无法互通。');
+      console.warn('⚠️ 当前没有 TURN。复杂网络下视频/语音可能无法互通。');
     }
 
-    setStatus(config.hasTurn ? '已加载 TURN 配置（强制走 TURN 中继）' : '未配置 TURN，仅使用 STUN');
+    setStatus(config.hasTurn ? '已加载配置' : '未配置 TURN，仅使用 STUN');
   } catch (e) {
     console.warn('读取 /config 失败，使用默认 STUN 配置：', e);
     setStatus('配置读取失败，使用默认 STUN');
   }
 }
+
+// ===== 应用启动 =====
 
 async function startApp() {
   try {
@@ -286,13 +360,11 @@ function calcDistance(a, b) {
 }
 
 function detectHandAndPinch() {
-  // landmarks are set by the onResults callback when running in VIDEO mode
   if (!lastLandmarks) return;
 
   const cw = localCanvas.width;
   const ch = localCanvas.height;
 
-  // 拇指尖 (4) 与 食指尖 (8)
   const thumbTip = getFingerPosition(lastLandmarks, 4, cw, ch);
   const indexTip = getFingerPosition(lastLandmarks, 8, cw, ch);
 
@@ -300,22 +372,18 @@ function detectHandAndPinch() {
   const isNowPinching = dist < PINCH_DIST_THRESHOLD * cw;
 
   if (isNowPinching) {
-    // 使用食指指尖作为绘制点（在食指和拇指中间更好看）
     const drawPoint = {
       x: (thumbTip.x + indexTip.x) / 2,
       y: (thumbTip.y + indexTip.y) / 2,
     };
 
     if (!isPinching) {
-      // 捏合开始 → 新笔画
       isPinching = true;
       currentStroke = [drawPoint];
     } else {
-      // 持续捏合 → 添加点
       currentStroke.push(drawPoint);
     }
   } else {
-    // 松开捏合
     if (isPinching && currentStroke.length > 0) {
       strokes.push(currentStroke);
     }
@@ -328,7 +396,6 @@ function drawStrokes() {
   if (!canvasCtx) return;
   const ctx = canvasCtx;
 
-  // 高亮色笔迹
   ctx.strokeStyle = '#FFD700';
   ctx.lineWidth = 4;
   ctx.lineCap = 'round';
@@ -336,7 +403,6 @@ function drawStrokes() {
   ctx.shadowColor = '#FFD700';
   ctx.shadowBlur = 8;
 
-  // 绘制已完成的所有笔画
   for (let s = 0; s < strokes.length; s++) {
     const stroke = strokes[s];
     if (stroke.length < 2) continue;
@@ -348,7 +414,6 @@ function drawStrokes() {
     ctx.stroke();
   }
 
-  // 绘制当前笔画（捏合中）
   if (isPinching && currentStroke.length >= 2) {
     ctx.beginPath();
     ctx.moveTo(currentStroke[0].x, currentStroke[0].y);
@@ -384,8 +449,6 @@ async function initHandLandmarker() {
 
     const tokenQs = token ? '?token=' + encodeURIComponent(token) : '';
 
-    // vision_bundle.js 是 ES Module，不能用普通 <script> 加载，否则会因为 export 语法报错。
-    // 用动态 import 后，从模块命名空间里读取 FilesetResolver / HandLandmarker。
     const visionModule = await import('./assets/mediapipe/vision_bundle.js' + tokenQs);
     const FilesetResolverClass = visionModule.FilesetResolver;
     const HandLandmarkerClass = visionModule.HandLandmarker;
@@ -407,7 +470,6 @@ async function initHandLandmarker() {
       minTrackingConfidence: 0.5,
     };
 
-    // 某些浏览器 / 显卡环境下 GPU delegate 会初始化失败，自动回退 CPU。
     try {
       handLandmarker = await HandLandmarkerClass.createFromOptions(vision, options);
     } catch (gpuError) {
@@ -426,26 +488,14 @@ async function initHandLandmarker() {
   }
 }
 
-function loadScript(src) {
-  return new Promise(function(resolve, reject) {
-    var script = document.createElement('script');
-    script.src = src;
-    script.onload = resolve;
-    script.onerror = reject;
-    document.head.appendChild(script);
-  });
-}
-
 function sendFrameToHandLandmarker() {
   if (!handLandmarker || !airWritingEnabled || !localVideo || !localVideo.videoWidth) return;
 
   try {
-    // results are applied via the VIDEO mode callback
     const results = handLandmarker.detectForVideo(localVideo, performance.now());
     if (results.landmarks && results.landmarks.length > 0) {
       lastLandmarks = results.landmarks[0];
     } else {
-      // 没人手在画面中 → 松开笔
       if (isPinching) {
         if (currentStroke.length > 0) {
           strokes.push(currentStroke);
@@ -474,7 +524,7 @@ function undoStroke() {
   isPinching = false;
 }
 
-// ----- WebSocket -----
+// ===== WebSocket =====
 
 function buildWsUrl() {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -554,30 +604,55 @@ function stopHeartbeat() {
   }
 }
 
+// ===== 消息处理 =====
+
 async function handleMessage(message) {
+  const msgGen = message.generation; // 对方 PC 的 generation
+
   switch (message.type) {
     case 'joined':
       myRole = message.role;
+      debugLog('signal', 'joined role=' + myRole + ' peers=' + message.peers);
       setStatus(
         message.peers === 1
           ? '你已进入房间，等待对方进入...'
           : '双方已进入，正在建立连接...'
       );
 
-      // 第二个进入的人先只等待 offer，避免两边同时 offer 造成 glare。
+      // 第二个人进入时：预先创建 PC（但不发 offer）
+      // 这样当 offer 到达时 PC 已经 ready，减少延迟
       if (message.role === 'callee') {
         createPeerConnection();
       }
       return;
 
     case 'peer-joined':
+      debugLog('signal', 'peer-joined');
       setStatus('对方已进入，正在发起连接...');
+
+      // 取消 peer-left 的防抖计时器
+      if (peerLeftTimer) {
+        clearTimeout(peerLeftTimer);
+        peerLeftTimer = null;
+        debugLog('signal', 'peer-left 计时器已取消（对方已重新进入）');
+      }
+
       await makeCall();
       return;
 
     case 'peer-left':
-      setStatus('对方已离开，等待重新连接...');
-      resetPeerConnection();
+      debugLog('signal', 'peer-left 收到，启动 ' + (PEER_LEFT_GRACE_MS / 1000) + 's 防抖');
+      setStatus('对方可能暂时离开，等待重连...');
+
+      // 不清除 peerLeftTimer，等待 peer-joined 或超时
+      if (!peerLeftTimer) {
+        peerLeftTimer = setTimeout(() => {
+          peerLeftTimer = null;
+          debugLog('signal', 'peer-left 防抖超时，正式重置连接');
+          setStatus('对方已离开，等待重新连接...');
+          resetPeerConnection();
+        }, PEER_LEFT_GRACE_MS);
+      }
       return;
 
     case 'room-full':
@@ -603,14 +678,31 @@ async function handleMessage(message) {
       return;
 
     default:
-      await handleSignalingMessage(message);
+      await handleSignalingMessage(message, msgGen);
   }
 }
 
-async function handleSignalingMessage(message) {
+// ===== WebRTC 信令处理 =====
+
+async function handleSignalingMessage(message, msgGen) {
   try {
+    // ---- offer ----
     if (message.offer) {
+      // 过滤旧 generation 的 offer
+      if (msgGen !== undefined && msgGen < pcGeneration && peerConnection) {
+        debugLog('stale', '忽略旧 generation offer: msgGen=' + msgGen + ' current=' + pcGeneration);
+        return;
+      }
+
+      debugLog('signal', '收到 offer (gen=' + msgGen + ')');
       setStatus('收到对方邀请，正在回应...');
+
+      // 如果已有 PC 但处于 closed 状态，先清理
+      if (peerConnection && peerConnection.signalingState === 'closed') {
+        debugLog('signal', '旧 PC 已 closed，重建');
+        resetPeerConnection();
+      }
+
       createPeerConnection();
 
       await peerConnection.setRemoteDescription(new RTCSessionDescription(message.offer));
@@ -619,14 +711,29 @@ async function handleSignalingMessage(message) {
       const answer = await peerConnection.createAnswer();
       await peerConnection.setLocalDescription(answer);
 
-      sendSignal({ answer: peerConnection.localDescription });
+      sendSignal({ answer: peerConnection.localDescription, generation: pcGeneration });
       setStatus('已发送回应，正在连接...');
       return;
     }
 
+    // ---- answer ----
     if (message.answer) {
       if (!peerConnection) {
-        console.warn('收到 answer 但 peerConnection 不存在');
+        console.warn('收到 answer 但 peerConnection 不存在，可能连接已关闭');
+        return;
+      }
+
+      // 过滤旧 generation 的 answer
+      if (msgGen !== undefined && msgGen < pcGeneration) {
+        debugLog('stale', '忽略旧 generation answer: msgGen=' + msgGen + ' current=' + pcGeneration);
+        return;
+      }
+
+      debugLog('signal', '收到 answer (gen=' + msgGen + ')');
+
+      // 检查 signalingState 是否允许设置 remote description
+      if (peerConnection.signalingState !== 'have-local-offer') {
+        debugLog('signal', '跳过 answer: 当前 signalingState=' + peerConnection.signalingState + '（不是 have-local-offer）');
         return;
       }
 
@@ -636,131 +743,167 @@ async function handleSignalingMessage(message) {
       return;
     }
 
+    // ---- candidate ----
     if (message.candidate) {
+      // 过滤旧 generation 的 candidate
+      if (msgGen !== undefined && msgGen < pcGeneration) {
+        // 静默忽略旧 candidate，否则会有大量日志
+        return;
+      }
+
       await addCandidate(message.candidate);
       return;
     }
   } catch (e) {
-    console.error('信令处理出错:', e);
+    console.error('信令处理出错:', e, message);
     setStatus('信令处理出错，正在尝试恢复...');
   }
 }
 
-
-async function logSelectedCandidatePair(pc) {
-  try {
-    const stats = await pc.getStats();
-    let selectedPair = null;
-
-    stats.forEach(report => {
-      if (report.type === 'candidate-pair' && (report.selected || report.state === 'succeeded')) {
-        if (!selectedPair || report.selected) selectedPair = report;
-      }
-    });
-
-    if (!selectedPair) {
-      console.log('未找到已选中的 candidate-pair。可能还没有真正连通。');
-      return;
-    }
-
-    const local = stats.get(selectedPair.localCandidateId);
-    const remote = stats.get(selectedPair.remoteCandidateId);
-
-    console.log('Selected ICE candidate pair:', {
-      pairState: selectedPair.state,
-      nominated: selectedPair.nominated,
-      currentRoundTripTime: selectedPair.currentRoundTripTime,
-      availableOutgoingBitrate: selectedPair.availableOutgoingBitrate,
-      localType: local && local.candidateType,
-      localProtocol: local && local.protocol,
-      localAddress: local && (local.address || local.ip),
-      localPort: local && local.port,
-      remoteType: remote && remote.candidateType,
-      remoteProtocol: remote && remote.protocol,
-      remoteAddress: remote && (remote.address || remote.ip),
-      remotePort: remote && remote.port,
-    });
-  } catch (e) {
-    console.warn('读取 WebRTC stats 失败:', e);
-  }
-}
+// ===== RTCPeerConnection 创建 =====
 
 function createPeerConnection() {
-  if (peerConnection) return peerConnection;
+  // 如果已有 PC 且不是 closed 状态，直接复用
+  if (peerConnection) {
+    if (peerConnection.signalingState !== 'closed') {
+      debugLog('pc', '复用现有 PC (gen=' + pcGeneration + ')');
+      return peerConnection;
+    }
+    // closed 的 PC 先清理
+    debugLog('pc', '清理已 closed 的 PC');
+    resetPeerConnection();
+  }
+
+  pcGeneration++;
+  const myGen = pcGeneration;
+  pendingCandidates = [];
+  // 清除 ICE disconnected 计时器
+  if (iceDisconnectTimer) {
+    clearTimeout(iceDisconnectTimer);
+    iceDisconnectTimer = null;
+  }
 
   setStatus('正在创建 WebRTC 连接...');
-  pendingCandidates = [];
 
   peerConnection = new RTCPeerConnection(configuration);
-  console.log('创建 RTCPeerConnection，当前配置：', configuration);
+  debugLog('pc', '创建 RTCPeerConnection gen=' + myGen + ' config:', {
+    iceServers: configuration.iceServers.map(s => ({
+      urls: typeof s.urls === 'string' ? s.urls.replace(/turn:[^?]+/, 'turn:***') : '[...]',
+      hasCredential: !!s.credential,
+      hasUsername: !!s.username,
+    })),
+    iceTransportPolicy: configuration.iceTransportPolicy || 'all',
+  });
 
+  // 添加本地 tracks
   outgoingStream.getTracks().forEach(track => {
     peerConnection.addTrack(track, outgoingStream);
   });
 
+  // -- ICE candidate 事件 --
   peerConnection.onicecandidate = event => {
     if (event.candidate) {
       const cand = event.candidate.candidate || '';
       const typMatch = cand.match(/ typ ([a-zA-Z0-9_-]+)/);
       const protocolMatch = cand.match(/ (udp|tcp) /i);
-      console.log('ICE candidate:', {
+      const relayProtocolMatch = cand.match(/ relay-protocol (udp|tcp)/i);
+      debugLog('ice', '本地 candidate:', {
         type: typMatch ? typMatch[1] : 'unknown',
         protocol: protocolMatch ? protocolMatch[1] : 'unknown',
-        raw: cand,
+        relayProtocol: relayProtocolMatch ? relayProtocolMatch[1] : null,
+        gen: myGen,
       });
-      sendSignal({ candidate: event.candidate });
+      sendSignal({ candidate: event.candidate, generation: myGen });
     } else {
-      console.log('ICE candidate gathering complete');
+      debugLog('ice', 'ICE candidate gathering 完成 (gen=' + myGen + ')');
     }
   };
 
+  // -- ICE gathering 状态 --
   peerConnection.onicegatheringstatechange = () => {
-    console.log('ICE gathering state:', peerConnection.iceGatheringState);
+    debugLog('ice', 'gathering state:', peerConnection.iceGatheringState);
   };
 
+  // -- 远端 track --
   peerConnection.ontrack = event => {
-    if (remoteVideo.srcObject !== event.streams[0]) {
+    debugLog('track', 'ontrack 触发, streams=' + event.streams.length + ', track kind=' + event.track.kind);
+    if (event.streams[0] && remoteVideo.srcObject !== event.streams[0]) {
       remoteVideo.srcObject = event.streams[0];
+      // 显式调用 play()，处理 autoplay 被浏览器阻止的情况
+      remoteVideo.play().then(() => {
+        debugLog('track', 'remoteVideo.play() 成功');
+      }).catch(err => {
+        console.warn('remoteVideo.play() 被浏览器阻止:', err.name);
+        showPlayButton();
+      });
     }
     setStatus('已收到对方视频/音频');
   };
 
+  // -- ICE 连接状态 --
   peerConnection.oniceconnectionstatechange = async () => {
-    console.log('ICE state:', peerConnection.iceConnectionState);
+    const iceState = peerConnection.iceConnectionState;
+    debugLog('ice', 'connection state:', iceState);
 
-    if (peerConnection.iceConnectionState === 'connected' || peerConnection.iceConnectionState === 'completed') {
+    // 清除之前的 disconnected 计时器
+    if (iceDisconnectTimer) {
+      clearTimeout(iceDisconnectTimer);
+      iceDisconnectTimer = null;
+    }
+
+    if (iceState === 'connected' || iceState === 'completed') {
       setStatus('ICE 已连接');
       await logSelectedCandidatePair(peerConnection);
+      await logInboundStats(peerConnection);
     }
 
-    if (peerConnection.iceConnectionState === 'failed' || peerConnection.iceConnectionState === 'disconnected') {
+    if (iceState === 'disconnected') {
+      setStatus('ICE 暂时中断，等待恢复...');
+      // 不立即处理，等待一段时间看是否恢复
+      iceDisconnectTimer = setTimeout(async () => {
+        iceDisconnectTimer = null;
+        if (peerConnection && peerConnection.iceConnectionState === 'disconnected') {
+          debugLog('ice', 'disconnected 持续超过 ' + (ICE_DISCONNECT_GRACE_MS / 1000) + 's，尝试 ICE restart');
+          await logSelectedCandidatePair(peerConnection);
+          restartIce();
+        }
+      }, ICE_DISCONNECT_GRACE_MS);
+    }
+
+    if (iceState === 'failed') {
       await logSelectedCandidatePair(peerConnection);
-    }
-
-    if (peerConnection.iceConnectionState === 'failed') {
       setStatus('ICE 连接失败，正在重启...');
       restartIce();
     }
   };
 
+  // -- 连接状态 --
   peerConnection.onconnectionstatechange = () => {
     const state = peerConnection.connectionState;
-    console.log('PeerConnection state:', state);
+    debugLog('pc', 'connection state:', state);
 
     if (state === 'connected') {
-      setStatus('通话已连接');
-    }
-
-    if (state === 'failed') {
-      setStatus('连接失败，正在重建...');
-      resetPeerConnection();
-      if (myRole === 'caller' && ws && ws.readyState === WebSocket.OPEN) {
-        setTimeout(makeCall, 1000);
-      }
+      setStatus('通话已连接 ✓');
     }
 
     if (state === 'disconnected') {
-      setStatus('连接暂时中断，等待恢复...');
+      // 让 ICE disconnected 处理，这里只记录
+      debugLog('pc', 'connectionState=disconnected，等待 ICE 层恢复');
+    }
+
+    if (state === 'failed') {
+      // iceConnectionState 的 failed 处理器已经调用了 restartIce
+      // 这里只在 ICE 层没有自动重启时才完整重建
+      debugLog('pc', 'connectionState=failed，ICE 层应该已经处理');
+      // 如果 ICE 状态还是 failed 且 restartIce 没起作用，做完整重建
+      if (peerConnection && peerConnection.iceConnectionState === 'failed') {
+        setStatus('连接失败，正在重建...');
+        const wasCaller = myRole === 'caller';
+        resetPeerConnection();
+        if (wasCaller && ws && ws.readyState === WebSocket.OPEN) {
+          setTimeout(makeCall, 1500);
+        }
+      }
     }
 
     if (state === 'closed') {
@@ -771,6 +914,8 @@ function createPeerConnection() {
   return peerConnection;
 }
 
+// ===== makeCall / restartIce =====
+
 async function makeCall() {
   if (!ws || ws.readyState !== WebSocket.OPEN) {
     setStatus('信令未连接，无法发起通话');
@@ -778,11 +923,13 @@ async function makeCall() {
   }
 
   createPeerConnection();
+  const myGen = pcGeneration;
 
   try {
     const offer = await peerConnection.createOffer();
     await peerConnection.setLocalDescription(offer);
-    sendSignal({ offer: peerConnection.localDescription });
+    sendSignal({ offer: peerConnection.localDescription, generation: myGen });
+    debugLog('signal', '发送 offer (gen=' + myGen + ')');
     setStatus('已发送连接邀请，等待对方回应...');
   } catch (e) {
     console.error('创建 offer 失败:', e);
@@ -791,17 +938,32 @@ async function makeCall() {
 }
 
 async function restartIce() {
-  if (!peerConnection || myRole !== 'caller') return;
+  if (!peerConnection) return;
+  if (peerConnection.signalingState === 'closed') {
+    debugLog('ice', 'restartIce: PC 已 closed，跳过');
+    return;
+  }
+
+  const myGen = pcGeneration;
+  debugLog('ice', '执行 ICE restart (gen=' + myGen + ', role=' + myRole + ')');
 
   try {
     const offer = await peerConnection.createOffer({ iceRestart: true });
     await peerConnection.setLocalDescription(offer);
-    sendSignal({ offer: peerConnection.localDescription });
+    sendSignal({ offer: peerConnection.localDescription, generation: myGen });
+    setStatus('ICE 重启中...');
   } catch (e) {
-    console.error('ICE restart failed:', e);
+    console.error('ICE restart 失败:', e);
+    debugLog('ice', 'ICE restart 失败，完整重建');
+    const wasCaller = myRole === 'caller';
     resetPeerConnection();
+    if (wasCaller && ws && ws.readyState === WebSocket.OPEN) {
+      setTimeout(makeCall, 1500);
+    }
   }
 }
+
+// ===== ICE candidate 管理 =====
 
 async function addCandidate(candidate) {
   try {
@@ -809,6 +971,7 @@ async function addCandidate(candidate) {
       await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
     } else {
       pendingCandidates.push(candidate);
+      debugLog('ice', 'candidate 缓存（remoteDescription 未就绪），队列长度=' + pendingCandidates.length);
     }
   } catch (e) {
     console.warn('添加 ICE candidate 失败:', e);
@@ -818,16 +981,23 @@ async function addCandidate(candidate) {
 async function flushPendingCandidates() {
   if (!peerConnection || !peerConnection.remoteDescription) return;
 
-  for (const candidate of pendingCandidates) {
+  const toFlush = pendingCandidates.slice();
+  pendingCandidates = [];
+
+  if (toFlush.length > 0) {
+    debugLog('ice', '刷新 ' + toFlush.length + ' 个缓存的 candidate');
+  }
+
+  for (const candidate of toFlush) {
     try {
       await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
     } catch (e) {
-      console.warn('flush candidate failed:', e);
+      console.warn('flush candidate 失败:', e);
     }
   }
-
-  pendingCandidates = [];
 }
+
+// ===== 信令发送 =====
 
 function sendSignal(payload) {
   if (ws && ws.readyState === WebSocket.OPEN) {
@@ -837,9 +1007,108 @@ function sendSignal(payload) {
   }
 }
 
+// ===== 统计信息（调试用） =====
+
+async function logSelectedCandidatePair(pc) {
+  try {
+    const stats = await pc.getStats();
+    let selectedPair = null;
+    let nominatedPair = null;
+
+    stats.forEach(report => {
+      if (report.type === 'candidate-pair') {
+        if (report.selected) selectedPair = report;
+        if (report.nominated && !nominatedPair) nominatedPair = report;
+        if (report.state === 'succeeded' && !selectedPair && !nominatedPair) nominatedPair = report;
+      }
+    });
+
+    const bestPair = selectedPair || nominatedPair;
+    if (!bestPair) {
+      debugLog('stats', '未找到 selected/nominated candidate-pair');
+      // 打印所有 pair 的状态帮助诊断
+      if (DEBUG_WEBRTC) {
+        const pairs = [];
+        stats.forEach(r => {
+          if (r.type === 'candidate-pair') {
+            pairs.push({
+              state: r.state,
+              nominated: r.nominated,
+              selected: r.selected,
+              localCandidateId: r.localCandidateId,
+              remoteCandidateId: r.remoteCandidateId,
+            });
+          }
+        });
+        console.log('[webrtc:stats] 所有 candidate-pairs:', pairs);
+      }
+      return;
+    }
+
+    const local = stats.get(bestPair.localCandidateId);
+    const remote = stats.get(bestPair.remoteCandidateId);
+
+    console.log('=== Selected ICE candidate pair ===');
+    console.log('  状态:', bestPair.state, '| nominated:', bestPair.nominated, '| selected:', bestPair.selected);
+    console.log('  RTT:', bestPair.currentRoundTripTime, 's | 可用出带宽:', bestPair.availableOutgoingBitrate, 'bps');
+    console.log('  本地:', {
+      type: local && local.candidateType,
+      protocol: local && local.protocol,
+      relayProtocol: local && local.relayProtocol,
+      address: local && (local.address || local.ip),
+      port: local && local.port,
+    });
+    console.log('  远端:', {
+      type: remote && remote.candidateType,
+      protocol: remote && remote.protocol,
+      address: remote && (remote.address || remote.ip),
+      port: remote && remote.port,
+    });
+    console.log('  判断: 走 relay=' + (local && local.candidateType === 'relay') +
+                ' 走 srflx=' + (local && local.candidateType === 'srflx') +
+                ' 走 host=' + (local && local.candidateType === 'host'));
+    console.log('  协议: ' + (local && local.protocol) + ' / ' + (local && local.relayProtocol || 'N/A'));
+    console.log('===================================');
+  } catch (e) {
+    console.warn('读取 WebRTC stats 失败:', e);
+  }
+}
+
+async function logInboundStats(pc) {
+  try {
+    const stats = await pc.getStats();
+    stats.forEach(report => {
+      if (report.type === 'inbound-rtp' && (report.kind === 'video' || report.kind === 'audio')) {
+        debugLog('stats', 'inbound-' + report.kind, {
+          bytesReceived: report.bytesReceived,
+          packetsReceived: report.packetsReceived,
+          packetsLost: report.packetsLost,
+          framesDecoded: report.framesDecoded,
+          frameWidth: report.frameWidth,
+          frameHeight: report.frameHeight,
+          framesPerSecond: report.framesPerSecond,
+          jitter: report.jitter,
+        });
+      }
+    });
+  } catch (e) {
+    console.warn('读取 inbound stats 失败:', e);
+  }
+}
+
+// ===== 连接清理 =====
+
 function resetPeerConnection() {
+  // 清除 ICE 计时器
+  if (iceDisconnectTimer) {
+    clearTimeout(iceDisconnectTimer);
+    iceDisconnectTimer = null;
+  }
+
   if (peerConnection) {
+    debugLog('pc', '重置 PC (gen=' + pcGeneration + ')');
     peerConnection.onicecandidate = null;
+    peerConnection.onicegatheringstatechange = null;
     peerConnection.ontrack = null;
     peerConnection.oniceconnectionstatechange = null;
     peerConnection.onconnectionstatechange = null;
@@ -849,6 +1118,32 @@ function resetPeerConnection() {
 
   pendingCandidates = [];
   remoteVideo.srcObject = null;
+
+  // 移除播放按钮
+  const playBtn = document.getElementById('remotePlayBtn');
+  if (playBtn) playBtn.remove();
+}
+
+function showPlayButton() {
+  // 如果已经有了就不重复创建
+  if (document.getElementById('remotePlayBtn')) return;
+
+  const btn = document.createElement('button');
+  btn.id = 'remotePlayBtn';
+  btn.textContent = '▶ 点击播放对方画面/声音';
+  btn.style.cssText = 'display:block;margin:8px auto;padding:8px 16px;background:#00f2fe;color:#1a1a2e;border:none;border-radius:8px;cursor:pointer;font-weight:bold;';
+  btn.onclick = () => {
+    if (remoteVideo.srcObject) {
+      remoteVideo.play().then(() => {
+        btn.remove();
+        debugLog('track', '用户手动播放 remoteVideo 成功');
+      }).catch(err => {
+        console.warn('手动播放仍然失败:', err);
+      });
+    }
+  };
+  const peerCard = remoteVideo.parentElement;
+  if (peerCard) peerCard.appendChild(btn);
 }
 
 function closeEverything(stopLocalTracks = true) {
@@ -857,6 +1152,11 @@ function closeEverything(stopLocalTracks = true) {
   if (reconnectTimer) {
     clearTimeout(reconnectTimer);
     reconnectTimer = null;
+  }
+
+  if (peerLeftTimer) {
+    clearTimeout(peerLeftTimer);
+    peerLeftTimer = null;
   }
 
   stopMagicCamera();
@@ -878,6 +1178,8 @@ function closeEverything(stopLocalTracks = true) {
     localStream.getTracks().forEach(track => track.stop());
   }
 }
+
+// ===== UI 事件 =====
 
 function setupEventListeners() {
   muteBtn.onclick = () => {
@@ -960,5 +1262,6 @@ function appendMessage(sender, text) {
   chatMessages.scrollTop = chatMessages.scrollHeight;
 }
 
+// ===== 启动 =====
 startApp();
 })();
