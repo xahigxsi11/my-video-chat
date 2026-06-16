@@ -105,14 +105,18 @@ async function loadConfig() {
       configuration = {
         iceServers: config.iceServers,
         iceCandidatePoolSize: 10,
+        // 调试/稳定优先：强制所有音视频流量走 TURN relay。
+        // 如果这样能连上，说明之前是 P2P/STUN 穿透失败。
+        iceTransportPolicy: config.hasTurn ? 'relay' : 'all',
       };
+      console.log('RTCPeerConnection configuration:', configuration);
     }
 
     if (!config.hasTurn) {
       console.warn('⚠️ 当前没有 TURN。复杂网络下视频/语音可能仍然无法互通。');
     }
 
-    setStatus(config.hasTurn ? '已加载 TURN 配置' : '未配置 TURN，仅使用 STUN');
+    setStatus(config.hasTurn ? '已加载 TURN 配置（强制走 TURN 中继）' : '未配置 TURN，仅使用 STUN');
   } catch (e) {
     console.warn('读取 /config 失败，使用默认 STUN 配置：', e);
     setStatus('配置读取失败，使用默认 STUN');
@@ -642,6 +646,45 @@ async function handleSignalingMessage(message) {
   }
 }
 
+
+async function logSelectedCandidatePair(pc) {
+  try {
+    const stats = await pc.getStats();
+    let selectedPair = null;
+
+    stats.forEach(report => {
+      if (report.type === 'candidate-pair' && (report.selected || report.state === 'succeeded')) {
+        if (!selectedPair || report.selected) selectedPair = report;
+      }
+    });
+
+    if (!selectedPair) {
+      console.log('未找到已选中的 candidate-pair。可能还没有真正连通。');
+      return;
+    }
+
+    const local = stats.get(selectedPair.localCandidateId);
+    const remote = stats.get(selectedPair.remoteCandidateId);
+
+    console.log('Selected ICE candidate pair:', {
+      pairState: selectedPair.state,
+      nominated: selectedPair.nominated,
+      currentRoundTripTime: selectedPair.currentRoundTripTime,
+      availableOutgoingBitrate: selectedPair.availableOutgoingBitrate,
+      localType: local && local.candidateType,
+      localProtocol: local && local.protocol,
+      localAddress: local && (local.address || local.ip),
+      localPort: local && local.port,
+      remoteType: remote && remote.candidateType,
+      remoteProtocol: remote && remote.protocol,
+      remoteAddress: remote && (remote.address || remote.ip),
+      remotePort: remote && remote.port,
+    });
+  } catch (e) {
+    console.warn('读取 WebRTC stats 失败:', e);
+  }
+}
+
 function createPeerConnection() {
   if (peerConnection) return peerConnection;
 
@@ -649,6 +692,7 @@ function createPeerConnection() {
   pendingCandidates = [];
 
   peerConnection = new RTCPeerConnection(configuration);
+  console.log('创建 RTCPeerConnection，当前配置：', configuration);
 
   outgoingStream.getTracks().forEach(track => {
     peerConnection.addTrack(track, outgoingStream);
@@ -656,8 +700,22 @@ function createPeerConnection() {
 
   peerConnection.onicecandidate = event => {
     if (event.candidate) {
+      const cand = event.candidate.candidate || '';
+      const typMatch = cand.match(/ typ ([a-zA-Z0-9_-]+)/);
+      const protocolMatch = cand.match(/ (udp|tcp) /i);
+      console.log('ICE candidate:', {
+        type: typMatch ? typMatch[1] : 'unknown',
+        protocol: protocolMatch ? protocolMatch[1] : 'unknown',
+        raw: cand,
+      });
       sendSignal({ candidate: event.candidate });
+    } else {
+      console.log('ICE candidate gathering complete');
     }
+  };
+
+  peerConnection.onicegatheringstatechange = () => {
+    console.log('ICE gathering state:', peerConnection.iceGatheringState);
   };
 
   peerConnection.ontrack = event => {
@@ -667,11 +725,16 @@ function createPeerConnection() {
     setStatus('已收到对方视频/音频');
   };
 
-  peerConnection.oniceconnectionstatechange = () => {
+  peerConnection.oniceconnectionstatechange = async () => {
     console.log('ICE state:', peerConnection.iceConnectionState);
 
-    if (peerConnection.iceConnectionState === 'connected') {
+    if (peerConnection.iceConnectionState === 'connected' || peerConnection.iceConnectionState === 'completed') {
       setStatus('ICE 已连接');
+      await logSelectedCandidatePair(peerConnection);
+    }
+
+    if (peerConnection.iceConnectionState === 'failed' || peerConnection.iceConnectionState === 'disconnected') {
+      await logSelectedCandidatePair(peerConnection);
     }
 
     if (peerConnection.iceConnectionState === 'failed') {
