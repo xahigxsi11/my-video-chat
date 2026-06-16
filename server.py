@@ -1,4 +1,4 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, HTTPException, Depends
 from fastapi.responses import FileResponse, JSONResponse
 from pathlib import Path
 import os
@@ -10,6 +10,19 @@ logging.basicConfig(level=logging.INFO)
 
 BASE_DIR = Path(__file__).resolve().parent
 ROOM_SECRET = os.environ.get("ROOM_SECRET", "").strip()
+
+
+# ----- 静态资源 Token 校验 -----
+async def verify_static_token(request: Request):
+    """
+    当 ROOM_SECRET 不为空时，要求所有 GET 请求的 ?token=xxx 匹配。
+    本地开发 ROOM_SECRET 为空时不校验。
+    """
+    if not ROOM_SECRET:
+        return
+    token = request.query_params.get("token", "")
+    if token != ROOM_SECRET:
+        raise HTTPException(status_code=403, detail="invalid token")
 
 # 你的 TURN 配置建议放在 Render 的 Environment Variables 里：
 # TURN_URLS=turn:your-domain.com:3478?transport=udp,turn:your-domain.com:3478?transport=tcp,turns:your-domain.com:5349?transport=tcp
@@ -24,12 +37,12 @@ rooms: dict[str, list[WebSocket]] = {}
 
 
 @app.get("/")
-async def get_index():
+async def get_index(token: None = Depends(verify_static_token)):
     return FileResponse(BASE_DIR / "index.html")
 
 
 @app.get("/main.js")
-async def get_js():
+async def get_js(token: None = Depends(verify_static_token)):
     return FileResponse(BASE_DIR / "main.js", media_type="application/javascript")
 
 
@@ -65,10 +78,20 @@ async def healthz():
 
 
 @app.get("/{file_path:path}")
-async def get_static_file(file_path: str):
+async def get_static_file(file_path: str, request: Request):
     """
     只允许读取当前目录下真实存在的普通文件，避免 ../ 路径穿越。
+
+    说明：MediaPipe 的 wasm loader 会自动请求：
+    - /assets/mediapipe/vision_wasm_internal.js
+    - /assets/mediapipe/vision_wasm_internal.wasm
+    这些内部请求无法自动带上 ?token=xxx。
+    因此只把通用模型/wasm资源放行；照片、index、main.js 等私密资源仍然校验 token。
     """
+    is_public_mediapipe_asset = file_path.startswith("assets/mediapipe/")
+    if not is_public_mediapipe_asset:
+        await verify_static_token(request)
+
     requested = (BASE_DIR / file_path).resolve()
 
     if not str(requested).startswith(str(BASE_DIR)):

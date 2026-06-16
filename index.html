@@ -41,20 +41,24 @@
 
         .bg-photo {
             position: absolute;
-            width: 200px;
+            width: 180px;
             height: auto;
-            padding: 8px 8px 30px 8px;
+            padding: 6px 6px 28px 6px;
             background: white;
             box-shadow: 0 10px 20px rgba(0,0,0,0.5);
             border-radius: 4px;
             opacity: 0.3;
             transition: opacity 0.3s ease;
+            object-fit: cover;
+            pointer-events: none;
         }
 
-        .p1 { top: 5%; left: 2%; transform: rotate(-15deg); }
-        .p2 { top: 15%; right: 2%; transform: rotate(10deg); }
-        .p3 { bottom: 10%; left: 5%; transform: rotate(12deg); }
-        .p4 { bottom: 5%; right: 5%; transform: rotate(-8deg); }
+        @media (max-width: 768px) {
+            .bg-photo {
+                width: 100px;
+                padding: 4px 4px 20px 4px;
+            }
+        }
 
         .content-layer {
             z-index: 10;
@@ -233,16 +237,81 @@
                 flex-direction: row;
             }
         }
+
+        /* --- Magic Camera --- */
+        #localCanvas {
+            width: 360px;
+            max-width: 85vw;
+            height: 270px;
+            background-color: #000;
+            border-radius: 12px;
+            object-fit: cover;
+            box-shadow: 0 8px 20px rgba(0,0,0,0.3);
+            display: block;
+        }
+
+        .magic-bar {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            padding: 8px 12px;
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(10px);
+            border-radius: 20px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .fps-label {
+            font-size: 13px;
+            font-family: 'Courier New', monospace;
+            color: #00f2fe;
+            padding: 4px 10px;
+            background: rgba(0, 242, 254, 0.1);
+            border-radius: 8px;
+            min-width: 60px;
+            text-align: center;
+        }
+
+        .filter-btn.active {
+            background: var(--accent-color);
+            color: #1a1a2e;
+            border-color: var(--accent-color);
+        }
+
+        .capture-btn {
+            background: rgba(255, 71, 87, 0.2) !important;
+            border-color: #ff4757 !important;
+        }
+        .capture-btn:hover {
+            background: rgba(255, 71, 87, 0.4) !important;
+        }
+
+        .btn-ink {
+            background: rgba(0, 242, 254, 0.15) !important;
+            border-color: rgba(0, 242, 254, 0.4) !important;
+        }
+        .btn-ink:hover {
+            background: rgba(0, 242, 254, 0.3) !important;
+        }
+
+        .air-writing-btn.active {
+            background: rgba(46, 213, 115, 0.3) !important;
+            border-color: #2ed573 !important;
+        }
+
+        @media (max-width: 768px) {
+            #localCanvas {
+                width: 85vw;
+                height: calc(85vw * 3 / 4);
+            }
+        }
     </style>
 </head>
 <body>
 
-    <div class="photo-background">
-        <img src="p1.jpg" class="bg-photo p1" alt="memorial">
-        <img src="p2.jpg" class="bg-photo p2" alt="memorial">
-        <img src="p3.jpg" class="bg-photo p3" alt="memorial">
-        <img src="p4.jpg" class="bg-photo p4" alt="memorial">
-    </div>
+    <div class="photo-background" id="photoBackground"></div>
 
     <div class="content-layer">
         <div class="main-title">
@@ -253,7 +322,8 @@
 
         <div class="video-hub">
             <div class="video-card">
-                <video id="localVideo" autoplay playsinline muted></video>
+                <canvas id="localCanvas"></canvas>
+                <video id="localVideo" autoplay playsinline muted style="position:absolute;width:0;height:0;opacity:0;pointer-events:none"></video>
                 <div class="user-label">You</div>
             </div>
 
@@ -261,6 +331,18 @@
                 <video id="remoteVideo" autoplay playsinline></video>
                 <div class="user-label">Peer</div>
             </div>
+        </div>
+
+        <div class="magic-bar">
+            <span id="fpsDisplay" class="fps-label">0 FPS</span>
+            <button class="btn filter-btn active" data-filter="normal">Normal</button>
+            <button class="btn filter-btn" data-filter="grayscale">Grayscale</button>
+            <button class="btn filter-btn" data-filter="high-contrast">High Contrast</button>
+            <button id="mirrorToggle" class="btn">🪞 Mirror</button>
+            <button id="captureBtn" class="btn capture-btn">📸 Capture</button>
+            <button id="airWritingToggle" class="btn air-writing-btn">✋ Air Writing</button>
+            <button id="clearDrawingBtn" class="btn btn-ink">🗑 Clear</button>
+            <button id="undoStrokeBtn" class="btn btn-ink">↩ Undo</button>
         </div>
 
         <div class="chat-container">
@@ -278,6 +360,71 @@
         </div>
     </div>
 
-    <script src="main.js"></script>
+    <script>
+    // 提取当前 URL 的 token，传递给所有受保护的子资源请求
+    (function() {
+        var params = new URLSearchParams(window.location.search);
+        var token = params.get('token') || '';
+        var tokenSuffix = token ? '?token=' + encodeURIComponent(token) : '';
+
+        // 1) 同步加载 main.js（script.async = false 确保执行顺序）
+        (function loadMainJS() {
+            var s = document.createElement('script');
+            s.src = 'main.js' + tokenSuffix;
+            s.async = false;
+            document.body.appendChild(s);
+        })();
+
+        // 2) 照片背景动态加载（异步，不阻塞）
+        (function loadPhotoBackground() {
+            var container = document.getElementById('photoBackground');
+            if (!container) return;
+
+            fetch('assets/photos/photos.json' + tokenSuffix)
+                .then(function(res) {
+                    if (!res.ok) throw new Error('HTTP ' + res.status);
+                    return res.json();
+                })
+                .then(function(data) {
+                    var allPhotos = data.photos;
+                    if (!allPhotos || allPhotos.length === 0) return;
+
+                    var count = Math.min(Math.floor(Math.random() * 5) + 6, allPhotos.length);
+                    var shuffled = [...allPhotos].sort(function() { return Math.random() - 0.5; });
+                    var selected = shuffled.slice(0, count);
+
+                    selected.forEach(function(src, i) {
+                        var img = document.createElement('img');
+                        img.className = 'bg-photo';
+                        img.src = src.replace(/\\/g, '/') + tokenSuffix;
+                        img.alt = 'memorial';
+
+                        var left, top;
+                        var zone = i % 4;
+                        switch (zone) {
+                            case 0: left = Math.random() * 30; top = Math.random() * 30; break;
+                            case 1: left = 70 + Math.random() * 28; top = Math.random() * 30; break;
+                            case 2: left = Math.random() * 30; top = 70 + Math.random() * 28; break;
+                            case 3: left = 70 + Math.random() * 28; top = 70 + Math.random() * 28; break;
+                        }
+
+                        img.style.left = left + '%';
+                        img.style.top = top + '%';
+
+                        var rotation = (Math.random() * 40 - 20).toFixed(1);
+                        var scaleVal = (Math.random() * 0.4 + 0.8).toFixed(2);
+                        img.style.transform = 'rotate(' + rotation + 'deg) scale(' + scaleVal + ')';
+
+                        img.style.opacity = (Math.random() * 0.3 + 0.15).toFixed(2);
+
+                        container.appendChild(img);
+                    });
+                })
+                .catch(function(err) {
+                    console.warn('照片背景加载失败（不影响正常使用）:', err.message);
+                });
+        })();
+    })();
+    </script>
 </body>
 </html>
