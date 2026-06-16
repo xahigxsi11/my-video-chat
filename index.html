@@ -301,10 +301,38 @@
             border-color: #2ed573 !important;
         }
 
+        /* Air Writing settings row */
+        #awSettingsRow select {
+            background: rgba(0, 0, 0, 0.35);
+            border: 1px solid rgba(255, 255, 255, 0.18);
+            color: #fff;
+            border-radius: 6px;
+            padding: 3px 8px;
+            font-size: 12px;
+            cursor: pointer;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+        #awSettingsRow select:hover {
+            border-color: rgba(0, 242, 254, 0.5);
+        }
+        #awSettingsRow select:focus {
+            border-color: #00f2fe;
+        }
+
         @media (max-width: 768px) {
             #localCanvas {
                 width: 85vw;
                 height: calc(85vw * 3 / 4);
+            }
+            #awSettingsRow {
+                font-size: 10px !important;
+                gap: 3px !important;
+                padding: 4px 6px !important;
+            }
+            #awSettingsRow select {
+                font-size: 10px !important;
+                padding: 2px 4px !important;
             }
         }
     </style>
